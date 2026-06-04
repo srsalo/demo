@@ -1,0 +1,91 @@
+_____________________BR-SRV (контроллер домена)_____________________
+
+# Установка Samba DC
+apt-get update && apt-get install task-samba-dc -y
+
+# Остановка samba (если запущена) и очистка старых данных
+systemctl stop samba smb nmb 2>/dev/null
+rm -f /etc/samba/smb.conf
+rm -rf /var/lib/samba /var/cache/samba
+mkdir -p /var/lib/samba/sysvol
+
+# Настройка локального DNS (прописываем себя как DNS-сервер)
+echo "search au-team.irpo"  > /etc/net/ifaces/ens18/resolv.conf
+echo "nameserver 127.0.0.1" >> /etc/net/ifaces/ens18/resolv.conf
+systemctl restart network
+
+# Автоматическое создание домена с форвардером на 77.88.8.8
+samba-tool domain provision \
+  --realm=AU-TEAM.IRPO \
+  --domain=AU-TEAM \
+  --adminpass='P@ssw0rd' \
+  --dns-backend=SAMBA_INTERNAL \
+  --option="dns forwarder = 77.88.8.8" \
+  --use-rfc2307
+
+# Копирование krb5.conf и запуск
+cp -f /var/lib/samba/private/krb5.conf /etc/krb5.conf
+systemctl enable --now samba
+
+# Создание группы hq
+samba-tool group add hq
+
+# Создание 5 пользователей и добавление в группу (пароль P@ssw0rd)
+for i in {1..5}; do
+  samba-tool user create "hquser$i" 'P@ssw0rd' --given-name="HQUser$i" --surname="Test"
+  samba-tool user setexpiry "hquser$i" --noexpiry
+  samba-tool group addmembers hq "hquser$i"
+done
+
+# Проверка пользователей и группы
+samba-tool user list
+samba-tool group listmembers hq
+
+_____________________HQ-RTR (DHCP-сервер)_____________________
+
+# Редактируем конфигурацию DHCP (укажите DNS-сервер BR-SRV)
+vim /etc/dhcp/dhcpd.conf
+# Найдите строку option domain-name-servers и измените на:
+#   option domain-name-servers 192.168.3.2;
+systemctl restart dhcpd
+
+_____________________HQ-CLI (клиент, ввод в домен)_____________________
+
+# Установка пакетов для входа в AD
+apt-get update && apt-get install task-auth-ad-sssd oddjob-mkhomedir -y
+
+# Настройка DNS (должен видеть контроллер домена)
+# В файле /etc/net/ifaces/<ваш_интерфейс>/resolv.conf укажите:
+#   search au-team.irpo
+#   nameserver 192.168.3.2
+# Затем перезапустите сеть:
+systemctl restart network
+
+# Проверка доступности домена
+host -t SRV _ldap._tcp.au-team.irpo
+ping au-team.irpo
+
+# Ввод в домен (запросит пароль администратора: P@ssw0rd)
+realm join --user=Administrator au-team.irpo
+
+# Включение автоматического создания домашних папок
+echo "session optional pam_oddjob_mkhomedir.so" >> /etc/pam.d/system-auth
+systemctl restart sssd oddjobd 2>/dev/null || systemctl restart sssd
+
+# Настройка sudo для группы hq (только id, grep, cat)
+mkdir -p /etc/sudoers.d
+echo "%hq ALL=(root) /usr/bin/id, /bin/grep, /bin/cat" > /etc/sudoers.d/hq
+visudo -c   # проверить синтаксис
+
+# Перезагрузка для применения всех изменений
+reboot
+После перезагрузки на HQ-CLI войдите под hquser1 и проверьте:
+
+# Должно работать:
+sudo id
+sudo grep root /etc/shadow
+sudo cat /etc/hostname
+
+# Должно быть ЗАПРЕЩЕНО (ошибка):
+sudo ls
+Если всё выполнено по шагам – задание полностью сдано.
