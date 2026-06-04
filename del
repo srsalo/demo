@@ -1,0 +1,4 @@
+apt-get remove git -y
+rm -rf /root/demo
+history -c
+echo "" > ~/.bash_history
