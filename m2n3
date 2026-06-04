@@ -1,0 +1,29 @@
+_______________________________________HQ-SRV__________________________________________
+apt-get install nfs-server -y
+
+mkdir /raid/nfs
+
+chmod 777 /raid/nfs
+
+echo '/raid/nfs 192.168.200.0/24(rw)' >> /etc/exports
+
+exportfs -arv
+
+systemctl enable --now nfs-server
+
+
+_______________________________________HQ-CLI__________________________________________
+mkdir -p /mnt/nfs
+
+chmod -R 777 /mnt/nfs
+
+echo 192.168.100.2:/raid/nfs /mnt/nfs nfs defaults 0 0 >> /etc/fstab
+
+mount -av
+
+touch /mnt/nfs/test
+
+после этого можем проверить подключился ли диск командой
+
+df -h
+В списке должно отобразиться хранилище с ip-адресом 192.168.100.2
