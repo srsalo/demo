@@ -1,0 +1,47 @@
+машинка ISP
+
+
+apt-get install nginx -y
+переходим в файл по пути /etc/nginx/sites-available.d/default.conf
+
+вписываем в него
+
+
+server {
+    listen 80;
+    server_name web.au-team.irpo;
+    location / {
+        proxy_pass http://172.16.1.2:8080;
+    }
+}
+
+server {
+    listen 80;
+    server_name docker.au-team.irpo;
+    location / {
+        proxy_pass http://172.16.2.2:8080;
+    }
+}
+1
+2
+3
+После того как прописали
+
+
+ln -sf /etc/nginx/sites-available.d/default.conf /etc/nginx/sites-enabled.d/
+включаемся
+
+
+systemctl enable --now nginx
+далее заходим в HQ-CLI файл по пути /etc/hosts в нем прописываем
+
+
+172.16.1.1 web.au-team.irpo
+172.16.2.1 docker.au-team.irpo
+1
+2
+INFO
+
+Если вы тренируетесь, учтите что в прямой зоне должны быть A-тип записи
+
+сохраняем файл и вписываем в адресную строку полное доменное имя web и docker, если все удачно то у нас появится морда, но уже не по айпишнику
