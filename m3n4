@@ -1,0 +1,193 @@
+[05.06.2026 2:14] Senior Salo: Подробный гайд по заданию 4 модуля 3
+Настройка межсетевого экрана на HQ-RTR и BR-RTR для интерфейса в сторону ISP
+
+Исходные условия
+
+· На HQ-RTR и BR-RTR настроен внешний интерфейс, смотрящий в сторону ISP (например, eth0 или ens192).
+· Через этот интерфейс проходят:
+  · проброшенные порты из задания 8 модуля 2 (tcp/8080 → веб-приложения, tcp/2026 → SSH),
+  · трафик IPsec-туннеля между HQ-RTR и BR-RTR (после выполнения задания 3 модуля 3),
+  · служебные протоколы (DNS, NTP, ICMP).
+· Задача: разрешить на внешнем интерфейсе только необходимые протоколы, запретить всё остальное, идущее из Интернета во внутреннюю сеть.
+· Решение выполняется на обоих маршрутизаторах одинаково (с учётом одинакового набора разрешённых портов).
+
+Выбор инструмента
+
+Будем использовать классический iptables. Если в стенде применяется nftables, действия аналогичны (будут приведены оба варианта). Проверить текущую систему можно командой:
+
+iptables --version
+nft --version
+В большинстве учебных стендов используется iptables.
+
+---
+
+Пошаговая настройка (iptables)
+
+1. Определите внешний интерфейс
+
+На каждом маршрутизаторе найдите интерфейс, подключённый к сети ISP. Обычно это интерфейс с IP-адресом из «внешней» подсети, не из 10.0.0.0/8 или 192.168.0.0/16. Например:
+
+ip a show
+Предположим, внешний интерфейс называется eth0.
+
+2. Очистите существующие правила (опционально, для чистоты)
+
+Если конфигурация не содержит важных самодельных правил, можно сбросить цепочки:
+
+iptables -F INPUT
+iptables -F FORWARD
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+Это временно откроет всё – мы сразу настроим нужное.
+
+3. Создайте разрешающие правила для входящего трафика на внешнем интерфейсе
+
+Правила должны работать для цепочек INPUT (пакеты к самому маршрутизатору) и FORWARD (транзитные пакеты во внутреннюю сеть). Применяем их с условием -i eth0.
+
+а) Разрешить уже установленные и связанные соединения
+
+iptables -A INPUT -i eth0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -i eth0 -m state --state ESTABLISHED,RELATED -j ACCEPT
+Это обязательно для прохождения ответного трафика на исходящие запросы (NTP-клиенты, DNS и т.п.).
+
+б) Разрешить протоколы HTTP/HTTPS
+
+iptables -A INPUT -i eth0 -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -i eth0 -p tcp --dport 443 -j ACCEPT
+iptables -A FORWARD -i eth0 -p tcp --dport 80 -j ACCEPT
+iptables -A FORWARD -i eth0 -p tcp --dport 443 -j ACCEPT
+в) Разрешить DNS (UDP и TCP порт 53)
+
+iptables -A INPUT -i eth0 -p udp --dport 53 -j ACCEPT
+iptables -A INPUT -i eth0 -p tcp --dport 53 -j ACCEPT
+iptables -A FORWARD -i eth0 -p udp --dport 53 -j ACCEPT
+iptables -A FORWARD -i eth0 -p tcp --dport 53 -j ACCEPT
+г) Разрешить NTP (UDP 123)
+
+iptables -A INPUT -i eth0 -p udp --dport 123 -j ACCEPT
+iptables -A FORWARD -i eth0 -p udp --dport 123 -j ACCEPT
+д) Разрешить ICMP (ping, traceroute и т.д.)
+
+iptables -A INPUT -i eth0 -p icmp -j ACCEPT
+iptables -A FORWARD -i eth0 -p icmp -j ACCEPT
+е) Разрешить проброшенные порты (из задания 8 модуля 2)
+
+# Порт веб-приложений (8080)
+iptables -A FORWARD -i eth0 -p tcp --dport 8080 -j ACCEPT
+# Порт SSH (2026)
+iptables -A FORWARD -i eth0 -p tcp --dport 2026 -j ACCEPT
+Для цепочки INPUT они обычно не нужны (если только сам маршрутизатор не слушает эти порты).
+
+ж) Разрешить IPsec (для туннеля из задания 3 модуля 3)
+
+Протоколы IPsec работают поверх IP (ESP – 50, AH – 51) и используют UDP 500 (IKE), UDP 4500 (NAT-T). Добавляем:
+
+# ESP
+iptables -A INPUT -i eth0 -p esp -j ACCEPT
+iptables -A FORWARD -i eth0 -p esp -j ACCEPT
+# AH (если используется)
+iptables -A INPUT -i eth0 -p ah -j ACCEPT
+iptables -A FORWARD -i eth0 -p ah -j ACCEPT
+# IKE
+iptables -A INPUT -i eth0 -p udp --dport 500 -j ACCEPT
+iptables -A FORWARD -i eth0 -p udp --dport 500 -j ACCEPT
+# NAT-T
+iptables -A INPUT -i eth0 -p udp --dport 4500 -j ACCEPT
+iptables -A FORWARD -i eth0 -p udp --dport 4500 -j ACCEPT
+4. Установите запретительную политику по умолчанию для внешнего интерфейса
+[05.06.2026 2:14] Senior Salo: Теперь меняем политику на DROP для входящих пакетов на eth0. Важно: политику цепочки меняем после добавления всех разрешающих правил, чтобы не потерять доступ.
+
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+Если у вас есть другие интерфейсы (например, внутренний eth1), трафик через них политикой затронут не будет, так как правила -i eth0 ограничивают только внешний интерфейс. Но глобальная политика DROP будет применяться ко всем пакетам, не подошедшим ни под одно правило. Поэтому если на внутреннем интерфейсе нет своих разрешающих правил, трафик между внутренними сетями тоже будет блокироваться. Чтобы этого избежать, обычно внутреннему интерфейсу доверяют:
+
+iptables -A INPUT -i eth1 -j ACCEPT
+iptables -A FORWARD -i eth1 -j ACCEPT
+Здесь eth1 — внутренний интерфейс маршрутизатора. Уточните имя внутреннего интерфейса (часто eth1 или ens224). Если не сделать этого, пропадёт связь с внутренней сетью.
+
+5. Проверьте список правил
+
+iptables -L -v -n
+iptables -L FORWARD -v -n
+Убедитесь, что:
+
+· в цепочках INPUT и FORWARD есть разрешающие правила с интерфейсом eth0,
+· политика по умолчанию – DROP,
+· внутренний интерфейс разрешён (ACCEPT для eth1).
+
+6. Сохраните правила для автоматической загрузки
+
+Способ зависит от дистрибутива.
+
+Debian/Ubuntu:
+
+apt install iptables-persistent
+iptables-save > /etc/iptables/rules.v4
+При установке пакета можно сразу сохранить текущие правила. После изменений всегда обновляйте файл:
+
+iptables-save > /etc/iptables/rules.v4
+CentOS/Rocky/RHEL:
+
+yum install iptables-services
+systemctl enable iptables
+iptables-save > /etc/sysconfig/iptables
+Проверка автозагрузки:
+
+systemctl status netfilter-persistent   # Debian
+systemctl status iptables               # CentOS
+7. Выполните те же действия на втором маршрутизаторе
+
+Полностью повторите шаги 1–6 на HQ-RTR или BR-RTR (на обоих устройствах).
+
+---
+
+Альтернативный вариант с nftables
+
+Если используется nftables, эквивалентные правила в файле /etc/nftables.conf (или создаются командой):
+
+nft add table inet filter
+nft add chain inet filter input { type filter hook input priority 0\; policy drop\; }
+nft add chain inet filter forward { type filter hook forward priority 0\; policy drop\; }
+
+# Внешний интерфейс
+nft add rule inet filter input iif eth0 ct state established,related accept
+nft add rule inet filter forward iif eth0 ct state established,related accept
+
+nft add rule inet filter input iif eth0 tcp dport {80, 443, 53, 2026, 8080} accept
+nft add rule inet filter forward iif eth0 tcp dport {80, 443, 53, 2026, 8080} accept
+nft add rule inet filter input iif eth0 udp dport {53, 123, 500, 4500} accept
+nft add rule inet filter forward iif eth0 udp dport {53, 123, 500, 4500} accept
+nft add rule inet filter input iif eth0 ip protocol esp accept
+nft add rule inet filter forward iif eth0 ip protocol esp accept
+nft add rule inet filter input iif eth0 ip protocol ah accept
+nft add rule inet filter forward iif eth0 ip protocol ah accept
+nft add rule inet filter input iif eth0 icmp accept
+nft add rule inet filter forward iif eth0 icmp accept
+
+# Внутренний интерфейс
+nft add rule inet filter input iif eth1 accept
+nft add rule inet filter forward iif eth1 accept
+Сохранить: nft list ruleset > /etc/nftables.conf и systemctl enable nftables.
+
+---
+
+Проверка работоспособности
+
+1. С внешней машины (например, с ISP) выполнить пинг до внутренних адресов – должен проходить.
+2. Проверить доступность веб-приложений через проброшенные порты (8080) и SSH (2026).
+3. Убедиться, что IPsec-туннель активен (после настройки задания 3) и не разрывается.
+4. С любого внутреннего хоста проверить синхронизацию времени с ISP (chronyc sources), разрешение DNS и работу веб-сервера.
+
+Если что-то не работает, просмотрите логи dmesg или включите временное логирование запрещённых пакетов:
+
+iptables -A INPUT -i eth0 -j LOG --log-prefix "FW-DROP: "
+И посмотрите /var/log/syslog или /var/log/messages.
+
+---
+
+Отчёт (что указать)
+[05.06.2026 2:14] Senior Salo: · Выбранный инструмент (iptables/nftables).
+· Имя внешнего интерфейса, политики цепочек.
+· Список разрешённых протоколов и портов.
+· Способ сохранения правил.
+· Результаты проверки (пинг, доступ к приложениям, статус туннеля).
